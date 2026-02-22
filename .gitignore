@@ -1,0 +1,12 @@
+# Git ignore for the tool server project
+__pycache__/
+*.py[cod]
+*.pyc
+.env
+.venv/
+venv/
+env/
+*.egg-info/
+dist/
+build/
+.DS_Store
