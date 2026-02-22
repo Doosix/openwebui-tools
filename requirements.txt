@@ -6,3 +6,5 @@ youtube-transcript-api
 trafilatura
 python-dotenv
 duckduckgo-search
+yfinance
+python-whois
