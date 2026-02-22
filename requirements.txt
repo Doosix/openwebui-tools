@@ -5,3 +5,4 @@ pydantic>=2.0.0
 youtube-transcript-api
 trafilatura
 python-dotenv
+duckduckgo-search
