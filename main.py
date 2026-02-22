@@ -19,12 +19,12 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # Configuration
-API_KEY = os.getenv("API_KEY", "")  # Set this in Coolify environment or .env
+API_KEY = os.getenv("API_KEY", "")  
 
 app = FastAPI(
-    title="OpenWebUI Super-Tool Server",
-    description="V2: Security + YouTube Transcripts + Advanced Web Scraping + Weather",
-    version="2.0.0",
+    title="OpenWebUI Elite-Tool Server",
+    description="V3: Rich UI + Symbols + Security + Super Tools",
+    version="3.0.0",
 )
 
 app.add_middleware(
@@ -35,168 +35,128 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ── SECURITY MIDDLEWARE ───────────────────────────────────
+# ── Symbols Mapping ──
+CURRENCY_SYMBOLS = {
+    "USD": "$", "INR": "₹", "EUR": "€", "GBP": "£", "JPY": "¥", 
+    "AUD": "A$", "CAD": "C$", "CHF": "Fr", "CNY": "¥", "AED": "د.إ"
+}
 
+WEATHER_EMOJIS = {
+    0: "☀️", 1: "🌤️", 2: "⛅", 3: "☁️", 45: "🌫️", 48: "🌫️",
+    51: "🌦️", 53: "🌦️", 55: "🌦️", 61: "🌧️", 63: "🌧️", 65: "🌧️",
+    71: "❄️", 73: "❄️", 75: "❄️", 80: "🌦️", 81: "🌦️", 82: "🌦️",
+    95: "⛈️", 96: "⛈️", 99: "⛈️"
+}
+
+# ── Security ──
 async def verify_api_key(authorization: Optional[str] = Header(None)):
-    if not API_KEY:
-        return  # Security disabled if no API_KEY is set
-    
-    if not authorization:
-        raise HTTPException(status_code=401, detail="Missing Authorization Header")
-    
-    # Support "Bearer <key>" or just "<key>"
+    if not API_KEY: return
+    if not authorization: raise HTTPException(status_code=401, detail="Missing Auth")
     token = authorization.split(" ")[-1] if " " in authorization else authorization
+    if token != API_KEY: raise HTTPException(status_code=403, detail="Invalid Key")
+
+# ── 1. CURRENCY (Rich UI) ──
+@app.get("/currency", tags=["Finance"], dependencies=[Depends(verify_api_key)])
+async def convert_currency(from_currency: str, to_currency: str, amount: float = 1.0):
+    fc, tc = from_currency.upper(), to_currency.upper()
+    url = f"https://open.er-api.com/v6/latest/{fc}"
+    async with httpx.AsyncClient() as client:
+        resp = await client.get(url)
+        data = resp.json()
     
-    if token != API_KEY:
-        raise HTTPException(status_code=403, detail="Invalid API Key")
+    rate = data["rates"].get(tc)
+    result = round(amount * rate, 2)
+    
+    s_from = CURRENCY_SYMBOLS.get(fc, "")
+    s_to = CURRENCY_SYMBOLS.get(tc, "")
+    
+    return {
+        "formatted_result": f"{s_from}{amount} {fc} = {s_to}{result} {tc}",
+        "symbol": s_to,
+        "amount": result,
+        "rate": rate,
+        "ui_msg": f"💱 **Exchange Rate**: 1 {fc} = {s_to}{rate} {tc}"
+    }
 
-# ── NEW: YOUTUBE TRANSCRIPT TOOL ──────────────────────────
-
-@app.get(
-    "/youtube/transcript",
-    summary="Get YouTube Video Transcript",
-    description="Fetches the full text transcript of a YouTube video using its URL or Video ID.",
-    tags=["Super Tools"],
-    dependencies=[Depends(verify_api_key)]
-)
-def get_youtube_transcript(
-    url: str = Query(..., description="YouTube URL or Video ID (e.g., https://youtube.com/watch?v=dQw4w9WgXcQ)")
-):
-    video_id = url
-    if "v=" in url:
-        video_id = url.split("v=")[1].split("&")[0]
-    elif "youtu.be/" in url:
-        video_id = url.split("youtu.be/")[1].split("?")[0]
-        
-    try:
-        transcript_list = YouTubeTranscriptApi.get_transcript(video_id)
-        full_text = " ".join([t['text'] for t in transcript_list])
-        return {
-            "video_id": video_id,
-            "transcript": full_text,
-            "length_characters": len(full_text),
-            "word_count": len(full_text.split())
-        }
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Could not fetch transcript: {str(e)}")
-
-# ── NEW: ADVANCED WEB SCRAPER ─────────────────────────────
-
-@app.get(
-    "/scrape",
-    summary="Scrape Website Content",
-    description="Extracts clean text content from any article or webpage, removing ads and headers.",
-    tags=["Super Tools"],
-    dependencies=[Depends(verify_api_key)]
-)
-async def scrape_site(
-    url: str = Query(..., description="URL of the webpage to scrape")
-):
-    if not url.startswith(("http://", "https://")):
-        url = "https://" + url
-        
-    try:
-        async with httpx.AsyncClient(timeout=15, follow_redirects=True) as client:
-            resp = await client.get(url, headers={"User-Agent": "Mozilla/5.0"})
-            if resp.status_code != 200:
-                raise HTTPException(status_code=resp.status_code, detail="Failed to fetch page")
-            
-            # Simple metadata extract
-            html = resp.text
-            title_match = re.search(r"<title[^>]*>(.*?)</title>", html, re.IGNORECASE | re.DOTALL)
-            title = title_match.group(1).strip() if title_match else "Unknown Title"
-            
-            # Trafilatura extracting main content
-            content = trafilatura.extract(html)
-            
-            return {
-                "title": title,
-                "url": str(resp.url),
-                "content": content if content else "Could not extract main text.",
-                "length": len(content) if content else 0
-            }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-# ── NEW: WEATHER TOOL (FREE) ──────────────────────────────
-
-@app.get(
-    "/weather",
-    summary="Get Weather Forecast",
-    description="Current weather and 3-day forecast using Open-Meteo (No API Key required).",
-    tags=["Utilities"],
-    dependencies=[Depends(verify_api_key)]
-)
-async def get_weather(
-    lat: float = Query(..., description="Latitude (e.g., 12.97 for Bangalore)"),
-    lon: float = Query(..., description="Longitude (e.g., 77.59 for Bangalore)"),
-):
-    url = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&current_weather=true&daily=temperature_2m_max,temperature_2m_min&timezone=auto"
+# ── 2. WEATHER (Rich UI) ──
+@app.get("/weather", tags=["Utilities"], dependencies=[Depends(verify_api_key)])
+async def get_weather(lat: float, lon: float):
+    url = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&current_weather=true&daily=weathercode,temperature_2m_max,temperature_2m_min&timezone=auto"
     async with httpx.AsyncClient() as client:
         resp = await client.get(url)
         data = resp.json()
     
     current = data.get("current_weather", {})
-    daily = data.get("daily", {})
+    code = current.get("weathercode", 0)
+    emoji = WEATHER_EMOJIS.get(code, "🌡️")
     
     return {
-        "current": {
-            "temperature": current.get("temperature"),
-            "windspeed": current.get("windspeed"),
-            "condition_code": current.get("weathercode"),
-            "time": current.get("time")
-        },
-        "forecast": [
-            {"date": d, "max": tmx, "min": tmn} 
-            for d, tmx, tmn in zip(daily.get("time", []), daily.get("temperature_2m_max", []), daily.get("temperature_2m_min", []))
-        ],
-        "unit": "Celsius"
+        "summary": f"{emoji} {current['temperature']}°C (Wind: {current['windspeed']} km/h)",
+        "emoji": emoji,
+        "temp": current['temperature'],
+        "daily_forecast": f"Max: {data['daily']['temperature_2m_max'][0]}°C | Min: {data['daily']['temperature_2m_min'][0]}°C"
     }
 
-# ── PREVIOUS TOOLS (UPDATED WITH AUTH) ────────────────────
+# ── 3. YOUTUBE TRANSCRIPT ──
+@app.get("/youtube/transcript", tags=["Super Tools"], dependencies=[Depends(verify_api_key)])
+def get_youtube_transcript(url: str):
+    video_id = url
+    if "v=" in url: video_id = url.split("v=")[1].split("&")[0]
+    elif "youtu.be/" in url: video_id = url.split("youtu.be/")[1].split("?")[0]
+        
+    try:
+        transcript_list = YouTubeTranscriptApi.get_transcript(video_id)
+        full_text = " ".join([t['text'] for t in transcript_list])
+        return {
+            "ui_header": "📺 **YouTube Transcript Extracted**",
+            "word_count": len(full_text.split()),
+            "transcript": full_text
+        }
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
+# ── 4. ADVANCED SCRAPER ──
+@app.get("/scrape", tags=["Super Tools"], dependencies=[Depends(verify_api_key)])
+async def scrape_site(url: str):
+    if not url.startswith("http"): url = "https://" + url
+    async with httpx.AsyncClient(timeout=15, follow_redirects=True) as client:
+        resp = await client.get(url, headers={"User-Agent": "Mozilla/5.0"})
+        content = trafilatura.extract(resp.text)
+        return {
+            "ui_header": f"🔗 **Content from {url}**",
+            "content": content if content else "No text found."
+        }
+
+# ── 5. TIME ──
 @app.get("/time", tags=["Utilities"], dependencies=[Depends(verify_api_key)])
 def get_current_time(timezone_offset: int = 330):
     utc_now = datetime.datetime.utcnow()
     local_now = utc_now + datetime.timedelta(minutes=timezone_offset)
-    return {"local": local_now.strftime("%Y-%m-%d %H:%M:%S"), "day": local_now.strftime("%A")}
+    return {
+        "ui_msg": f"🕒 **Current Time**: {local_now.strftime('%I:%M %p')} ({local_now.strftime('%A, %d %b %Y')})",
+        "time": local_now.strftime("%H:%M:%S")
+    }
 
-@app.get("/currency", tags=["Finance"], dependencies=[Depends(verify_api_key)])
-async def convert_currency(from_currency: str, to_currency: str, amount: float = 1.0):
-    url = f"https://open.er-api.com/v6/latest/{from_currency.upper()}"
-    async with httpx.AsyncClient() as client:
-        resp = await client.get(url)
-        data = resp.json()
-    rate = data["rates"].get(to_currency.upper())
-    return {"from": from_currency, "to": to_currency, "amount": amount, "result": round(amount * rate, 4)}
-
-@app.get("/qr-code", tags=["Utilities"], dependencies=[Depends(verify_api_key)])
+# ── 6. OTHER TOOLS (SIMPLIFIED) ──
+@app.get("/qr-code", dependencies=[Depends(verify_api_key)])
 def generate_qr(data: str, size: int = 200):
     encoded = urllib.parse.quote(data)
-    return {"qr_url": f"https://api.qrserver.com/v1/create-qr-code/?data={encoded}&size={size}x{size}"}
+    return {"qr_url": f"https://api.qrserver.com/v1/create-qr-code/?data={encoded}&size={size}x{size}", "ui_msg": "📱 **QR Code Generated Successfully**"}
 
-@app.get("/ip-lookup", tags=["Network"], dependencies=[Depends(verify_api_key)])
+@app.get("/ip-lookup", dependencies=[Depends(verify_api_key)])
 async def ip_lookup(ip: str):
     async with httpx.AsyncClient() as client:
-        resp = await client.get(f"http://ip-api.com/json/{ip}")
-        return resp.json()
+        r = await client.get(f"http://ip-api.com/json/{ip}")
+        d = r.json()
+        return {"ui_msg": f"🌍 **IP Location**: {d.get('city')}, {d.get('country')}", "details": d}
 
-@app.get("/math", tags=["Utilities"], dependencies=[Depends(verify_api_key)])
+@app.get("/math", dependencies=[Depends(verify_api_key)])
 def calculate(expression: str):
     try:
-        # Very basic safe eval for demo
-        safe_dict = {"sqrt": math.sqrt, "pow": pow, "pi": math.pi}
-        return {"result": eval(expression, {"__builtins__": {}}, safe_dict)}
+        res = eval(expression, {"__builtins__": {}}, {"sqrt": math.sqrt, "pow": pow, "pi": math.pi})
+        return {"ui_msg": f"🔢 **Result**: `{res}`", "result": res}
     except: return {"error": "Invalid math"}
 
-# ──────────────────────────────────────────────────────────
-
-@app.get("/", include_in_schema=False)
+@app.get("/")
 def root():
-    return {
-        "status": "Online",
-        "version": "2.0.0",
-        "author": "Mohan Ram",
-        "security": "Enabled" if API_KEY else "Disabled",
-        "features": ["YouTube Transcripts", "Advanced Scraping", "Weather", "Currency", "QR", "IP Lookup"]
-    }
+    return {"name": "OpenWebUI Elite-Tool Server", "version": "3.0.0", "author": "Mohan Ram"}
